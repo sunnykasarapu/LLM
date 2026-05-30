@@ -1,0 +1,11 @@
+.env
+__pycache__/
+.pytest_cache/
+*.pyc
+reports/
+node_modules/
+dist/
+.venv/
+postgres_data/
+grafana_data/
+

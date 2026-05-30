@@ -1,0 +1,25 @@
+{
+  "title": "Safety Evaluation Observability",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "API Requests",
+      "targets": [{"expr": "sum(safety_api_requests_total)"}],
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0}
+    },
+    {
+      "type": "stat",
+      "title": "Evaluations Created",
+      "targets": [{"expr": "sum(safety_evaluations_created_total)"}],
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0}
+    },
+    {
+      "type": "stat",
+      "title": "Provider Latency",
+      "targets": [{"expr": "avg(safety_provider_latency_ms)"}],
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0}
+    }
+  ]
+}
+
