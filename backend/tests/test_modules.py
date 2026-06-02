@@ -118,5 +118,7 @@ def test_report_generator_creates_json_markdown_and_pdf(tmp_path, monkeypatch):
     )
     report = ReportGenerator().build(run, [])
     assert report.json_payload["aggregate_score"] == 88
+    assert report.json_payload["result_count"] == 0
+    assert report.json_payload["severity_counts"]["low"] == 0
     assert "Executive Summary" in report.markdown
     assert report.pdf_path is not None

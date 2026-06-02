@@ -51,8 +51,17 @@ type Report = {
   id: string;
   run_id: string;
   json_payload: {
+    name?: string;
+    provider?: string;
+    model?: { name?: string; version?: string };
     aggregate_score?: number;
     result_count?: number;
+    attack_distribution?: Record<string, number>;
+    severity_counts?: Record<string, number>;
+    regression?: Record<string, unknown>;
+    regression_summary?: string;
+    recommendations?: string[];
+    top_risks?: Array<{ attack_category?: string; severity?: string; aggregate_safety_score?: number; mutated_prompt?: string; response_text?: string }>;
   };
   created_at: string;
 };
@@ -90,10 +99,12 @@ function App() {
   const [reports, setReports] = React.useState<Report[]>([]);
   const [providers, setProviders] = React.useState<ProviderInfo[]>([]);
   const [selectedRun, setSelectedRun] = React.useState<string | null>(null);
+  const [selectedReportId, setSelectedReportId] = React.useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = React.useState("mock");
   const [modelVersion, setModelVersion] = React.useState("v1");
   const [mutationDepth, setMutationDepth] = React.useState(2);
   const [notice, setNotice] = React.useState<string | null>(null);
+  const [activeTab, setActiveTab] = React.useState<"overview" | "configure" | "scores" | "runs" | "attacks" | "regression" | "audit" | "reports">("overview");
 
   const headers = React.useMemo(() => ({ "X-Role": "admin", "X-Actor-Id": "dashboard" }), []);
 
@@ -101,12 +112,15 @@ function App() {
     if (!runId) {
       setResults([]);
       setReports([]);
+      setSelectedReportId(null);
       return;
     }
     const resultResponse = await fetch(`${API_URL}/api/v1/evaluations/${runId}/results`, { headers });
     setResults(await resultResponse.json());
     const reportResponse = await fetch(`${API_URL}/api/v1/reports?run_id=${runId}`, { headers });
-    setReports(await reportResponse.json());
+    const reportPayload = await reportResponse.json();
+    setReports(reportPayload);
+    setSelectedReportId((current) => current && reportPayload.some((report: Report) => report.id === current) ? current : reportPayload[0]?.id ?? null);
   }, [headers]);
 
   const refresh = React.useCallback(async (preferredRunId?: string) => {
@@ -202,8 +216,9 @@ function App() {
     }, {})
   ).map(([category, count]) => ({ category, count }));
   const trend = runs.slice().reverse().map((run) => ({ name: run.model_version, score: run.aggregate_score ?? 0 }));
-  const selectedProviderInfo = providers.find((provider) => provider.name === selectedProvider);
+    const selectedProviderInfo = providers.find((provider) => provider.name === selectedProvider);
   const providerUnavailable = Boolean(selectedProviderInfo && !selectedProviderInfo.ready);
+  const selectedReport = reports.find((report) => report.id === selectedReportId) ?? reports[0] ?? null;
 
   const latestCount = 5;
   const sortByDateDesc = <T extends { created_at?: string }>(items: T[]) =>
@@ -231,25 +246,8 @@ function App() {
 
   return (
     <main className="shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <ShieldAlert size={24} />
-          <span>Safety Eval</span>
-        </div>
-        <nav>
-          <a href="#overview"><Gauge size={18} /> Overview</a>
-          <a href="#configure"><KeyRound size={18} /> Providers</a>
-          <a href="#scores"><Sparkles size={18} /> Scores</a>
-          <a href="#runs"><ClipboardList size={18} /> Runs</a>
-          <a href="#attacks"><ShieldAlert size={18} /> Attacks</a>
-          <a href="#regression"><GitCompare size={18} /> Regression</a>
-          <a href="#audit"><History size={18} /> Audit</a>
-          <a href="#reports"><FileText size={18} /> Reports</a>
-        </nav>
-      </aside>
-
       <section className="content">
-        <header className="hero">
+        <header className={`hero ${activeTab}-hero`}>
           <div>
             <p className="eyebrow">LLM Red-Teaming Framework</p>
             <h1>Safety Evaluation Dashboard</h1>
@@ -262,58 +260,77 @@ function App() {
           </div>
         </header>
 
-        <section id="configure" className="control-panel">
-          <div className="control-copy">
-            <div className="panel-title"><KeyRound size={18} /> Evaluation Setup</div>
-            <p>Select a provider and run a controlled safety evaluation. API keys are checked from backend environment variables only.</p>
-          </div>
-          <div className="controls">
-            <label>
-              Provider
-              <select value={selectedProvider} onChange={(event) => {
-                setSelectedProvider(event.target.value);
-                setNotice(null);
-              }}>
-                {providers.map((provider) => (
-                  <option key={provider.name} value={provider.name}>{provider.label}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Model Version
-              <input value={modelVersion} onChange={(event) => setModelVersion(event.target.value)} />
-            </label>
-            <label>
-              Mutation Depth
-              <input min="1" max="4" type="number" value={mutationDepth} onChange={(event) => setMutationDepth(Number(event.target.value))} />
-            </label>
-            <button className="primary-action" disabled={providerUnavailable} onClick={createRun}><Play size={16} /> Run evaluation</button>
-          </div>
-          <div className="key-dropdown">
-            <details>
-              <summary><KeyRound size={16} /> API key status</summary>
-              <div className="key-list">
-                {providers.filter((provider) => provider.api_key_required).map((provider) => (
-                  <button className={provider.ready ? "key-button ready" : "key-button missing"} key={provider.name} title={provider.message} type="button">
-                    {provider.ready ? <CheckCircle2 size={16} /> : <ShieldAlert size={16} />}
-                    {provider.label}: {provider.ready ? "ready" : "needs attention"}
-                  </button>
-                ))}
-              </div>
-            </details>
-            <span className="key-note">Selected: {selectedProviderInfo?.label ?? "Mock Provider"} using {PROVIDER_MODELS[selectedProvider] ?? "configured model"}</span>
-            {notice ? <span className={providerUnavailable ? "notice warning" : "notice"}>{notice}</span> : null}
-          </div>
-        </section>
+        <nav className="tabs-nav">
+          <button className={`tab ${activeTab === "overview" ? "active" : ""}`} onClick={() => setActiveTab("overview")}><Gauge size={16} /> Overview</button>
+          <button className={`tab ${activeTab === "configure" ? "active" : ""}`} onClick={() => setActiveTab("configure")}><KeyRound size={16} /> Configure</button>
+          <button className={`tab ${activeTab === "scores" ? "active" : ""}`} onClick={() => setActiveTab("scores")}><Sparkles size={16} /> Scores</button>
+          <button className={`tab ${activeTab === "runs" ? "active" : ""}`} onClick={() => setActiveTab("runs")}><Activity size={16} /> Runs</button>
+          <button className={`tab ${activeTab === "attacks" ? "active" : ""}`} onClick={() => setActiveTab("attacks")}><ShieldAlert size={16} /> Attacks</button>
+          <button className={`tab ${activeTab === "regression" ? "active" : ""}`} onClick={() => setActiveTab("regression")}><GitCompare size={16} /> Regression</button>
+          <button className={`tab ${activeTab === "audit" ? "active" : ""}`} onClick={() => setActiveTab("audit")}><History size={16} /> Audit</button>
+          <button className={`tab ${activeTab === "reports" ? "active" : ""}`} onClick={() => setActiveTab("reports")}><FileText size={16} /> Reports</button>
+        </nav>
 
-        <section id="overview" className="metrics-grid">
-          <Metric title="Aggregate Safety Score" value={`${aggregate.toFixed(1)}`} tone={aggregate >= 70 ? "good" : "risk"} />
-          <Metric title="Active Runs" value={`${runs.filter((run) => ["queued", "running"].includes(run.status)).length}`} />
-          <Metric title="Attack Results" value={`${results.length}`} />
-          <Metric title="Audit Events" value={`${audits.length}`} />
-        </section>
+        {activeTab === "configure" && (
+          <section className="tab-content">
+            <div className="control-copy">
+              <div className="panel-title"><KeyRound size={18} /> Evaluation Setup</div>
+              <p>Select a provider and run a controlled safety evaluation. API keys are checked from backend environment variables only.</p>
+            </div>
+            <div className="controls">
+              <label>
+                Provider
+                <select value={selectedProvider} onChange={(event) => {
+                  setSelectedProvider(event.target.value);
+                  setNotice(null);
+                }}>
+                  {providers.map((provider) => (
+                    <option key={provider.name} value={provider.name}>{provider.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Model Version
+                <input value={modelVersion} onChange={(event) => setModelVersion(event.target.value)} />
+              </label>
+              <label>
+                Mutation Depth
+                <input min="1" max="4" type="number" value={mutationDepth} onChange={(event) => setMutationDepth(Number(event.target.value))} />
+              </label>
+              <button className="primary-action" disabled={providerUnavailable} onClick={createRun}><Play size={16} /> Run evaluation</button>
+            </div>
+            <div className="key-dropdown">
+              <details>
+                <summary><KeyRound size={16} /> API key status</summary>
+                <div className="key-list">
+                  {providers.filter((provider) => provider.api_key_required).map((provider) => (
+                    <button className={provider.ready ? "key-button ready" : "key-button missing"} key={provider.name} title={provider.message} type="button">
+                      {provider.ready ? <CheckCircle2 size={16} /> : <ShieldAlert size={16} />}
+                      {provider.label}: {provider.ready ? "ready" : "needs attention"}
+                    </button>
+                  ))}
+                </div>
+              </details>
+              <span className="key-note">Selected: {selectedProviderInfo?.label ?? "Mock Provider"} using {PROVIDER_MODELS[selectedProvider] ?? "configured model"}</span>
+              {notice ? <span className={providerUnavailable ? "notice warning" : "notice"}>{notice}</span> : null}
+            </div>
+          </section>
+        )}
 
-        <section id="scores" className="panel score-panel">
+        {activeTab === "overview" && (
+          <section id="overview" className="metrics-grid tab-panel">
+            <Metric title="Aggregate Safety Score" value={`${aggregate.toFixed(1)}`} tone={aggregate >= 70 ? "good" : "risk"} />
+            <Metric title="Active Runs" value={`${runs.filter((run) => ["queued", "running"].includes(run.status)).length}`} />
+            <Metric title="Attack Results" value={`${results.length}`} />
+            <Metric title="Audit Events" value={`${audits.length}`} />
+            <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end' }}>
+              <button className="secondary-action" onClick={() => setActiveTab('runs')}><History size={14} /> View full history</button>
+            </div>
+          </section>
+        )}
+
+        {activeTab === "scores" && (
+          <section id="scores" className="panel score-panel">
           <div className="panel-heading">
             <div>
               <div className="panel-title"><Sparkles size={18} /> Individual Safety Scores</div>
@@ -326,51 +343,63 @@ function App() {
               <ScoreCard key={score.key} score={score} />
             ))}
           </div>
-        </section>
+          </section>
+        )}
 
-        <section className="split">
-          <div id="runs" className="panel">
+        
+
+        {activeTab === "runs" && (
+          <section className="panel">
+            <div id="runs" className="panel">
             <div className="panel-title"><Activity size={18} /> Evaluation Run Tracking</div>
             <div className="run-columns">
               <div className="run-column">
                 <div className="column-header">Success ({successfulRunsAll.length})</div>
                 <div className="run-list">
-                  {latestSuccessfulRuns.map((run) => (
-                    <div className={run.id === selected?.id ? "run selected" : "run"} key={run.id} role="button" tabIndex={0} onClick={() => setSelectedRun(run.id)}>
-                      <span>{run.name}</span>
-                      <div className="run-meta"><strong>{run.status}</strong><small>{run.provider} / {run.model_version}</small></div>
-                      <progress value={run.progress} max="1" />
-                      <button className="delete-btn" onClick={(e) => { e.stopPropagation(); deleteRun(run.id); }} title="Delete run"><Trash2 size={14} /></button>
-                    </div>
-                  ))}
+                  {latestSuccessfulRuns[0] ? (
+                    (
+                      <div className={latestSuccessfulRuns[0].id === selected?.id ? "run selected" : "run"} key={latestSuccessfulRuns[0].id} role="button" tabIndex={0} onClick={() => setSelectedRun(latestSuccessfulRuns[0].id)}>
+                        <span>{latestSuccessfulRuns[0].name}</span>
+                        <div className="run-meta"><strong>{latestSuccessfulRuns[0].status}</strong><small>{latestSuccessfulRuns[0].provider} / {latestSuccessfulRuns[0].model_version}</small></div>
+                        <progress value={latestSuccessfulRuns[0].progress} max="1" />
+                        <button className="delete-btn" onClick={(e) => { e.stopPropagation(); deleteRun(latestSuccessfulRuns[0].id); }} title="Delete run"><Trash2 size={14} /></button>
+                      </div>
+                    )
+                  ) : (
+                    <div className="run">No recent successful runs</div>
+                  )}
                 </div>
-                {moreSuccessfulRuns.length > 0 ? (
-                  <details className="history-dropdown">
-                    <summary>History</summary>
-                    <div className="run-list history-list">
-                      {moreSuccessfulRuns.map((run) => (
-                        <div className={run.id === selected?.id ? "run selected" : "run"} key={run.id} role="button" tabIndex={0} onClick={() => setSelectedRun(run.id)}>
-                          <span>{run.name}</span>
-                          <div className="run-meta"><strong>{run.status}</strong><small>{run.provider} / {run.model_version}</small></div>
-                          <progress value={run.progress} max="1" />
-                          <button className="delete-btn" onClick={(e) => { e.stopPropagation(); deleteRun(run.id); }} title="Delete run"><Trash2 size={14} /></button>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
-                ) : null}
+                  {moreSuccessfulRuns.length > 0 ? (
+                    <details className="history-dropdown">
+                      <summary>History</summary>
+                      <div className="run-list history-list">
+                        {moreSuccessfulRuns.map((run) => (
+                          <div className={run.id === selected?.id ? "run selected" : "run"} key={run.id} role="button" tabIndex={0} onClick={() => setSelectedRun(run.id)}>
+                            <span>{run.name}</span>
+                            <div className="run-meta"><strong>{run.status}</strong><small>{run.provider} / {run.model_version}</small></div>
+                            <progress value={run.progress} max="1" />
+                            <button className="delete-btn" onClick={(e) => { e.stopPropagation(); deleteRun(run.id); }} title="Delete run"><Trash2 size={14} /></button>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  ) : null}
               </div>
               <div className="run-column">
                 <div className="column-header">Failed ({failedRunsAll.length})</div>
                 <div className="run-list">
-                  {latestFailedRuns.map((run) => (
-                    <div className={run.id === selected?.id ? "run selected" : "run"} key={run.id} role="button" tabIndex={0} onClick={() => setSelectedRun(run.id)}>
-                      <span>{run.name}</span>
-                      <div className="run-meta"><strong>{run.status}</strong><small>{run.provider} / {run.model_version}</small></div>
-                      <progress value={run.progress} max="1" />
-                      <button className="delete-btn" onClick={(e) => { e.stopPropagation(); deleteRun(run.id); }} title="Delete run"><Trash2 size={14} /></button>
-                    </div>
-                  ))}
+                  {latestFailedRuns[0] ? (
+                    (
+                      <div className={latestFailedRuns[0].id === selected?.id ? "run selected" : "run"} key={latestFailedRuns[0].id} role="button" tabIndex={0} onClick={() => setSelectedRun(latestFailedRuns[0].id)}>
+                        <span>{latestFailedRuns[0].name}</span>
+                        <div className="run-meta"><strong>{latestFailedRuns[0].status}</strong><small>{latestFailedRuns[0].provider} / {latestFailedRuns[0].model_version}</small></div>
+                        <progress value={latestFailedRuns[0].progress} max="1" />
+                        <button className="delete-btn" onClick={(e) => { e.stopPropagation(); deleteRun(latestFailedRuns[0].id); }} title="Delete run"><Trash2 size={14} /></button>
+                      </div>
+                    )
+                  ) : (
+                    <div className="run">No recent failed runs</div>
+                  )}
                 </div>
                 {moreFailedRuns.length > 0 ? (
                   <details className="history-dropdown">
@@ -389,8 +418,13 @@ function App() {
                 ) : null}
               </div>
             </div>
-          </div>
-          <div id="regression" className="panel">
+            </div>
+          </section>
+        )}
+
+        {activeTab === "regression" && (
+          <section className="panel">
+            <div id="regression" className="panel">
             <div className="panel-heading">
               <div>
                 <div className="panel-title"><GitCompare size={18} /> Regression Comparison</div>
@@ -425,11 +459,13 @@ function App() {
                 </div>
               </div>
             </div>
-          </div>
-        </section>
+            </div>
+          </section>
+        )}
 
-        <section className="split">
-          <div id="attacks" className="panel">
+        {activeTab === "attacks" && (
+          <section className="panel">
+            <div id="attacks" className="panel">
             <div className="panel-title"><ShieldAlert size={18} /> Attack Analysis</div>
             <ResponsiveContainer width="100%" height={260}>
               <BarChart data={severityRows}>
@@ -444,24 +480,31 @@ function App() {
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
-          </div>
-          <div id="audit" className="panel">
+            </div>
+          </section>
+        )}
+
+        {activeTab === "audit" && (
+          <section className="panel">
+            <div id="audit" className="panel">
             <div className="panel-title"><History size={18} /> Audit Log Timeline</div>
-            <div className="audit-columns">
+                <div className="audit-columns">
               <div className="audit-column">
                 <div className="column-header">Success Events ({auditSuccessAll.length})</div>
                 <div className="timeline">
-                  {latestAuditSuccess.map((audit) => (
-                    <div className="event" key={audit.id}>
+                  {latestAuditSuccess[0] ? (
+                    <div className="event" key={latestAuditSuccess[0].id}>
                       <div className="event-header">
                         <div>
-                          <strong>{audit.action}</strong>
-                          <span>{audit.resource_type} {audit.resource_id?.slice(0, 8)}</span>
+                          <strong>{latestAuditSuccess[0].action}</strong>
+                          <span>{latestAuditSuccess[0].resource_type} {latestAuditSuccess[0].resource_id?.slice(0, 8)}</span>
                         </div>
-                        <button className="delete-btn-small" onClick={() => deleteAuditLog(audit.id)} title="Delete audit log"><Trash2 size={12} /></button>
+                        <button className="delete-btn-small" onClick={() => deleteAuditLog(latestAuditSuccess[0].id)} title="Delete audit log"><Trash2 size={12} /></button>
                       </div>
                     </div>
-                  ))}
+                  ) : (
+                    <div className="event">No recent success events</div>
+                  )}
                 </div>
                 {moreAuditSuccess.length > 0 ? (
                   <details className="history-dropdown">
@@ -485,17 +528,19 @@ function App() {
               <div className="audit-column">
                 <div className="column-header">Failed Events ({auditFailedAll.length})</div>
                 <div className="timeline">
-                  {latestAuditFailed.map((audit) => (
-                    <div className="event failed" key={audit.id}>
+                  {latestAuditFailed[0] ? (
+                    <div className="event failed" key={latestAuditFailed[0].id}>
                       <div className="event-header">
                         <div>
-                          <strong>{audit.action}</strong>
-                          <span>{audit.resource_type} {audit.resource_id?.slice(0, 8)}</span>
+                          <strong>{latestAuditFailed[0].action}</strong>
+                          <span>{latestAuditFailed[0].resource_type} {latestAuditFailed[0].resource_id?.slice(0, 8)}</span>
                         </div>
-                        <button className="delete-btn-small" onClick={() => deleteAuditLog(audit.id)} title="Delete audit log"><Trash2 size={12} /></button>
+                        <button className="delete-btn-small" onClick={() => deleteAuditLog(latestAuditFailed[0].id)} title="Delete audit log"><Trash2 size={12} /></button>
                       </div>
                     </div>
-                  ))}
+                  ) : (
+                    <div className="event">No recent failed events</div>
+                  )}
                 </div>
                 {moreAuditFailed.length > 0 ? (
                   <details className="history-dropdown">
@@ -517,23 +562,122 @@ function App() {
                 ) : null}
               </div>
             </div>
-          </div>
-        </section>
+            </div>
+          </section>
+        )}
 
-        <section id="reports" className="panel">
+        {activeTab === "reports" && (
+          <section id="reports" className="panel">
           <div className="panel-title"><FileText size={18} /> Report Generation</div>
           <div className="report-grid">
             {reports.map((report) => (
-              <a className="report" key={report.id} href={`${API_URL}/api/v1/reports/${report.id}/pdf`} target="_blank" rel="noreferrer">
-                <strong>Report {report.id.slice(0, 8)}</strong>
-                <span>{report.json_payload.result_count ?? 0} results</span>
-                <span>Score {report.json_payload.aggregate_score ?? "pending"}</span>
-              </a>
+              <ReportCard
+                key={report.id}
+                report={report}
+                selected={report.id === selectedReportId}
+                onSelect={() => setSelectedReportId(report.id)}
+              />
             ))}
           </div>
+          <div className="report-detail-panel">
+            <div className="panel-title">Report preview</div>
+            {selectedReport ? (
+              <ReportDetails report={selectedReport} />
+            ) : (
+              <p>Select a report card to inspect the detailed safety summary.</p>
+            )}
+          </div>
         </section>
+        )}
       </section>
     </main>
+  );
+}
+
+function ReportCard({ report, selected, onSelect }: { report: Report; selected: boolean; onSelect: () => void }) {
+  const distribution = report.json_payload.attack_distribution || {};
+  const severityCounts = report.json_payload.severity_counts || {};
+  const regressionSummary = report.json_payload.regression_summary;
+  return (
+    <article className={`report ${selected ? "selected" : ""}`} role="button" tabIndex={0} onClick={onSelect} onKeyDown={(event) => { if (event.key === "Enter") onSelect(); }}>
+      <div>
+        <strong>{report.json_payload.name ?? `Report ${report.id.slice(0, 8)}`}</strong>
+        <span>{report.json_payload.provider ?? "Unknown provider"} / {report.json_payload.model?.name ?? "model"} {report.json_payload.model?.version ?? ""}</span>
+      </div>
+      <div>
+        <span>{report.json_payload.result_count ?? 0} prompts evaluated</span>
+        <span>Safety score {report.json_payload.aggregate_score?.toFixed(1) ?? "pending"}</span>
+      </div>
+      <div className="report-summary">
+        <span>{Object.entries(distribution).map(([category, count]) => `${category}: ${count}`).join(" · ") || "No attack data"}</span>
+        <span>{Object.entries(severityCounts).filter(([, count]) => count).map(([severity, count]) => `${severity}: ${count}`).join(" · ") || "No severity breakdown"}</span>
+      </div>
+      {regressionSummary ? <p className="report-note">{regressionSummary}</p> : null}
+      <a className="report-link" href={`${API_URL}/api/v1/reports/${report.id}/pdf`} target="_blank" rel="noreferrer">Download PDF</a>
+    </article>
+  );
+}
+
+function ReportDetails({ report }: { report: Report }) {
+  const distribution = report.json_payload.attack_distribution || {};
+  const severityCounts = report.json_payload.severity_counts || {};
+  const topRisks = report.json_payload.top_risks || [];
+  return (
+    <div className="report-details">
+      <div className="report-details-row">
+        <div>
+          <strong>{report.json_payload.name ?? `Report ${report.id.slice(0, 8)}`}</strong>
+          <span>{report.json_payload.provider ?? "Provider unknown"}</span>
+          <span>{report.json_payload.model?.name ?? "Model"} {report.json_payload.model?.version ?? ""}</span>
+        </div>
+        <a className="report-link" href={`${API_URL}/api/v1/reports/${report.id}/pdf`} target="_blank" rel="noreferrer">Download PDF</a>
+      </div>
+      <div className="report-details-grid">
+        <div className="report-details-card">
+          <span>Safety score</span>
+          <strong>{report.json_payload.aggregate_score?.toFixed(1) ?? "pending"}</strong>
+          <p>{report.json_payload.result_count ?? 0} prompts evaluated</p>
+        </div>
+        <div className="report-details-card">
+          <span>Regression summary</span>
+          <p>{report.json_payload.regression_summary ?? "No regression summary available."}</p>
+        </div>
+      </div>
+      <div className="report-details-summary">
+        <div>
+          <h4>Attack distribution</h4>
+          <p>{Object.entries(distribution).map(([category, count]) => `${category}: ${count}`).join(" · ") || "None"}</p>
+        </div>
+        <div>
+          <h4>Severity breakdown</h4>
+          <p>{Object.entries(severityCounts).filter(([, count]) => count).map(([severity, count]) => `${severity}: ${count}`).join(" · ") || "None"}</p>
+        </div>
+      </div>
+      <div className="report-details-top-risks">
+        <h4>Top risk cases</h4>
+        {topRisks.length ? (
+          topRisks.map((risk, idx) => (
+            <div className="risk-case" key={`${risk.attack_category}-${idx}`}>
+              <strong>{idx + 1}. {risk.attack_category ?? "Unknown"} — {risk.severity ?? "unknown"} — {risk.aggregate_safety_score ?? "n/a"}</strong>
+              <p><span>Prompt:</span> {risk.mutated_prompt ?? "n/a"}</p>
+              <p><span>Response:</span> {risk.response_text ?? "n/a"}</p>
+            </div>
+          ))
+        ) : (
+          <p>No high-risk cases were recorded in this report.</p>
+        )}
+      </div>
+      {report.json_payload.recommendations?.length ? (
+        <div className="report-details-recommendations">
+          <h4>Recommendations</h4>
+          <ul>
+            {report.json_payload.recommendations.map((recommendation) => (
+              <li key={recommendation}>{recommendation}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
