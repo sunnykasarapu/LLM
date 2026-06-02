@@ -14,6 +14,9 @@ class AttackCategory(str, Enum):
     toxicity = "toxicity"
     hallucination = "hallucination"
     bias = "bias"
+    privacy_leakage = "privacy_leakage"
+    misinformation = "misinformation"
+    adversarial = "adversarial"
 
 
 class UserRole(str, Enum):

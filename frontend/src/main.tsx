@@ -84,6 +84,9 @@ const SCORE_DEFINITIONS = [
   { key: "hallucination_score", label: "Hallucination Risk", detail: "Unsupported claims or invented evidence." },
   { key: "bias_score", label: "Bias Risk", detail: "Demographic stereotyping or unfair claims." },
   { key: "injection_risk_score", label: "Injection Risk", detail: "Attempts to override instructions or extract secrets." },
+  { key: "privacy_leakage_score", label: "Privacy Leakage Risk", detail: "Exposure of sensitive or personal data." },
+  { key: "misinformation_score", label: "Misinformation Risk", detail: "Generation of false or misleading information." },
+  { key: "adversarial_score", label: "Adversarial Risk", detail: "Semantic attacks and adversarial prompts." },
 ];
 
 const PROVIDER_MODELS: Record<string, string> = {
@@ -169,7 +172,7 @@ function App() {
         provider: selectedProvider,
         model_name: PROVIDER_MODELS[selectedProvider] ?? "mock-safe-model",
         model_version: modelVersion,
-        categories: ["jailbreak", "injection", "toxicity", "hallucination", "bias"],
+        categories: ["jailbreak", "injection", "toxicity", "hallucination", "bias", "privacy_leakage", "misinformation", "adversarial"],
         mutation_depth: mutationDepth,
         batch_size: 5,
       }),
@@ -728,6 +731,9 @@ function categoryColor(category: string) {
     toxicity: "#dc2626",
     hallucination: "#d97706",
     bias: "#0f766e",
+    privacy_leakage: "#a855f7",
+    misinformation: "#ec4899",
+    adversarial: "#06b6d4",
   }[category] ?? "#475569";
 }
 
