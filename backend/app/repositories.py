@@ -33,6 +33,14 @@ class EvaluationRepository:
     def list_runs(self) -> list[EvaluationRun]:
         return list(self.db.scalars(select(EvaluationRun).order_by(desc(EvaluationRun.created_at))).all())
 
+    def latest_completed_run(self, *, model_name: str | None = None, model_version: str | None = None) -> EvaluationRun | None:
+        stmt = select(EvaluationRun).where(EvaluationRun.status == EvaluationStatus.completed).order_by(desc(EvaluationRun.completed_at), desc(EvaluationRun.created_at))
+        if model_name:
+            stmt = stmt.where(EvaluationRun.model_name == model_name)
+        if model_version:
+            stmt = stmt.where(EvaluationRun.model_version == model_version)
+        return self.db.scalars(stmt).first()
+
     def update_status(self, run: EvaluationRun, status: EvaluationStatus, progress: float | None = None) -> EvaluationRun:
         run.status = status
         if progress is not None:
@@ -60,6 +68,21 @@ class EvaluationRepository:
 
     def list_results(self, run_id: str) -> list[EvaluationResult]:
         return list(self.db.scalars(select(EvaluationResult).where(EvaluationResult.run_id == run_id).order_by(EvaluationResult.created_at)).all())
+
+    def find_cached_result(self, *, provider: str, model_name: str, model_version: str, mutated_prompt: str) -> EvaluationResult | None:
+        stmt = (
+            select(EvaluationResult)
+            .join(EvaluationRun, EvaluationRun.id == EvaluationResult.run_id)
+            .where(
+                EvaluationRun.provider == provider,
+                EvaluationRun.model_name == model_name,
+                EvaluationRun.model_version == model_version,
+                EvaluationRun.status == EvaluationStatus.completed,
+                EvaluationResult.mutated_prompt == mutated_prompt,
+            )
+            .order_by(desc(EvaluationResult.created_at))
+        )
+        return self.db.scalars(stmt).first()
 
     def delete_run(self, run_id: str) -> bool:
         run = self.db.get(EvaluationRun, run_id)
@@ -138,11 +161,3 @@ class AuditRepository:
 
     def list_logs(self) -> list[AuditLog]:
         return list(self.db.scalars(select(AuditLog).order_by(desc(AuditLog.created_at))).all())
-
-    def delete_log(self, log_id: str) -> bool:
-        audit = self.db.get(AuditLog, log_id)
-        if not audit:
-            return False
-        self.db.delete(audit)
-        self.db.commit()
-        return True

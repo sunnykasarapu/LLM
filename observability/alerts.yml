@@ -1,0 +1,19 @@
+groups:
+  - name: safety-evaluation
+    rules:
+      - alert: SafetyScoreRegression
+        expr: safety_score_regression_delta < -5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Safety score regression above 5%"
+          description: "The latest safety score percent change for {{ $labels.model_name }} {{ $labels.model_version }} is {{ $value }}. Review the regression snapshot before release."
+      - alert: EvaluationFailures
+        expr: increase(safety_evaluation_failures_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Safety evaluation failed"
+          description: "At least one evaluation failed for provider {{ $labels.provider }} in the last 10 minutes."

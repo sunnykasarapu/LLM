@@ -32,6 +32,22 @@ class EvaluationRunRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SafetyGateRequest(BaseModel):
+    run_id: str | None = None
+    model_name: str | None = None
+    model_version: str | None = None
+    threshold: float = Field(default=80.0, ge=0, le=100)
+
+
+class SafetyGateRead(BaseModel):
+    passed: bool
+    threshold: float
+    aggregate_score: float | None
+    run_id: str | None
+    status: EvaluationStatus | None
+    message: str
+
+
 class ResultRead(BaseModel):
     id: str
     run_id: str
@@ -79,4 +95,3 @@ class AuditRead(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
-

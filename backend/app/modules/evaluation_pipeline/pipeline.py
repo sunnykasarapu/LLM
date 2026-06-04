@@ -10,6 +10,7 @@ from app.modules.evaluation_pipeline.sandbox import PromptSandbox
 from app.modules.prompt_mutation_engine.engine import PromptMutationEngine
 from app.modules.provider_integration_layer.contracts import ProviderRequest
 from app.modules.provider_integration_layer.providers import ProviderFactory
+from app.modules.observability_system.metrics import evaluation_failures_total, prompt_cache_hits_total, prompts_executed_total, provider_latency_ms, safety_score, safety_score_regression_delta
 from app.modules.regression_tracking_system.engine import RegressionTracker
 from app.modules.report_generation_system.engine import ReportGenerator
 from app.modules.safety_scoring_engine.engine import SafetyScoringEngine
@@ -48,24 +49,40 @@ class EvaluationPipeline:
             for attack in attacks:
                 for mutated_prompt in self.mutator.mutate(attack, int(run.config["mutation_depth"])):
                     isolated_prompt = self.sandbox.isolate(mutated_prompt)
-                    provider_response = provider.generate(
-                        ProviderRequest(
-                            prompt=isolated_prompt,
-                            model_name=run.model_name,
-                            model_version=run.model_version,
-                            metadata={"run_id": run.id, "category": attack.category.value},
-                        )
+                    cached_result = self.evaluations.find_cached_result(
+                        provider=run.provider,
+                        model_name=run.model_name,
+                        model_version=run.model_version,
+                        mutated_prompt=isolated_prompt,
                     )
-                    score = self.scorer.score(category=attack.category, prompt=isolated_prompt, response=provider_response.text)
+                    if cached_result:
+                        prompt_cache_hits_total.labels(provider=run.provider).inc()
+                        response_text = cached_result.response_text
+                        latency_ms = 0
+                    else:
+                        provider_response = provider.generate(
+                            ProviderRequest(
+                                prompt=isolated_prompt,
+                                model_name=run.model_name,
+                                model_version=run.model_version,
+                                metadata={"run_id": run.id, "category": attack.category.value},
+                            )
+                        )
+                        response_text = provider_response.text
+                        latency_ms = provider_response.latency_ms
+                        provider_latency_ms.observe(latency_ms)
+                    score = self.scorer.score(category=attack.category, prompt=isolated_prompt, response=response_text)
                     aggregate_scores.append(score.aggregate_score)
+                    outcome = "pass" if score.severity in {"low", "info"} else "fail"
+                    prompts_executed_total.labels(provider=run.provider, category=attack.category.value, outcome=outcome).inc()
                     self.evaluations.add_result(
                         EvaluationResult(
                             run_id=run.id,
                             attack_category=attack.category,
                             original_prompt=attack.prompt,
                             mutated_prompt=isolated_prompt,
-                            response_text=provider_response.text,
-                            provider_latency_ms=provider_response.latency_ms,
+                            response_text=response_text,
+                            provider_latency_ms=latency_ms,
                             scores=score.scores,
                             severity=score.severity,
                         )
@@ -73,14 +90,44 @@ class EvaluationPipeline:
                     completed += 1
                     self.evaluations.update_status(run, EvaluationStatus.running, completed / max(total_prompts, 1))
             self.evaluations.set_aggregate_score(run, round(mean(aggregate_scores), 2) if aggregate_scores else 0)
+            safety_score.labels(provider=run.provider, model_name=run.model_name, model_version=run.model_version).set(run.aggregate_score or 0)
             baseline = self.evaluations.get_run(run.config["baseline_run_id"]) if run.config.get("baseline_run_id") else None
             snapshot = self.regressions.add_snapshot(self.regression_tracker.compare(run, baseline))
+            safety_score_regression_delta.labels(provider=run.provider, model_name=run.model_name, model_version=run.model_version).set(snapshot.delta.get("percent_change", 0))
             results = self.evaluations.list_results(run.id)
             report = self.reports.add_report(self.report_generator.build(run, results, snapshot.delta))
             self.evaluations.update_status(run, EvaluationStatus.completed, 1)
-            self.audit.log(actor_id=run.created_by, action="evaluation.completed", resource_type="evaluation_run", resource_id=run.id, metadata={"report_id": report.id})
+            self.audit.log(
+                actor_id=run.created_by,
+                action="evaluation.completed",
+                resource_type="evaluation_run",
+                resource_id=run.id,
+                metadata={
+                    "name": run.name,
+                    "provider": run.provider,
+                    "model_name": run.model_name,
+                    "model_version": run.model_version,
+                    "aggregate_score": run.aggregate_score,
+                    "result_count": len(results),
+                    "report_id": report.id,
+                },
+            )
             return {"run_id": run.id, "status": run.status.value, "aggregate_score": run.aggregate_score, "report_id": report.id}
         except Exception as exc:
+            self.db.rollback()
+            evaluation_failures_total.labels(provider=run.provider).inc()
             self.evaluations.update_status(run, EvaluationStatus.failed)
-            self.audit.log(actor_id=run.created_by, action="evaluation.failed", resource_type="evaluation_run", resource_id=run.id, metadata={"error": str(exc)})
+            self.audit.log(
+                actor_id=run.created_by,
+                action="evaluation.failed",
+                resource_type="evaluation_run",
+                resource_id=run.id,
+                metadata={
+                    "name": run.name,
+                    "provider": run.provider,
+                    "model_name": run.model_name,
+                    "model_version": run.model_version,
+                    "error": str(exc),
+                },
+            )
             raise

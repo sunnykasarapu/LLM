@@ -13,7 +13,6 @@ import {
   RefreshCw,
   ShieldAlert,
   Sparkles,
-  Trash2,
 } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import "./styles.css";
@@ -44,6 +43,8 @@ type AuditLog = {
   action: string;
   resource_type: string;
   resource_id: string | null;
+  actor_id?: string | null;
+  metadata_json?: Record<string, unknown>;
   created_at: string;
 };
 
@@ -87,6 +88,19 @@ const SCORE_DEFINITIONS = [
   { key: "privacy_leakage_score", label: "Privacy Leakage Risk", detail: "Exposure of sensitive or personal data." },
   { key: "misinformation_score", label: "Misinformation Risk", detail: "Generation of false or misleading information." },
   { key: "adversarial_score", label: "Adversarial Risk", detail: "Semantic attacks and adversarial prompts." },
+  { key: "csam_avoidance_score", label: "CSAM Avoidance Risk", detail: "Strict refusal for child-safety abuse probes." },
+];
+
+const ATTACK_CATEGORIES = [
+  { key: "jailbreak", label: "Jailbreak" },
+  { key: "injection", label: "Injection" },
+  { key: "toxicity", label: "Toxicity" },
+  { key: "hallucination", label: "Hallucination" },
+  { key: "bias", label: "Bias" },
+  { key: "privacy_leakage", label: "Privacy" },
+  { key: "misinformation", label: "Misinformation" },
+  { key: "adversarial", label: "Adversarial" },
+  { key: "csam_avoidance", label: "CSAM Avoidance" },
 ];
 
 const PROVIDER_MODELS: Record<string, string> = {
@@ -106,7 +120,10 @@ function App() {
   const [selectedProvider, setSelectedProvider] = React.useState("mock");
   const [modelVersion, setModelVersion] = React.useState("v1");
   const [mutationDepth, setMutationDepth] = React.useState(2);
+  const [selectedCategories, setSelectedCategories] = React.useState(ATTACK_CATEGORIES.map((category) => category.key));
   const [notice, setNotice] = React.useState<string | null>(null);
+  const [gateNotice, setGateNotice] = React.useState<string | null>(null);
+  const [scoresRefreshing, setScoresRefreshing] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<"overview" | "configure" | "scores" | "runs" | "attacks" | "regression" | "audit" | "reports">("overview");
 
   const headers = React.useMemo(() => ({ "X-Role": "admin", "X-Actor-Id": "dashboard" }), []);
@@ -172,7 +189,7 @@ function App() {
         provider: selectedProvider,
         model_name: PROVIDER_MODELS[selectedProvider] ?? "mock-safe-model",
         model_version: modelVersion,
-        categories: ["jailbreak", "injection", "toxicity", "hallucination", "bias", "privacy_leakage", "misinformation", "adversarial"],
+        categories: selectedCategories.length ? selectedCategories : ATTACK_CATEGORIES.map((category) => category.key),
         mutation_depth: mutationDepth,
         batch_size: 5,
       }),
@@ -186,38 +203,38 @@ function App() {
     await refresh(createdRun.id);
   };
 
-  const deleteRun = async (runId: string) => {
-    if (!confirm("Are you sure you want to delete this evaluation run? This action cannot be undone.")) {
-      return;
+  const refreshScores = async () => {
+    setScoresRefreshing(true);
+    try {
+      const runResponse = await fetch(`${API_URL}/api/v1/evaluations`, { headers });
+      const nextRuns = await runResponse.json();
+      setRuns(nextRuns);
+      const runId = selectedRun && nextRuns.some((run: Run) => run.id === selectedRun) ? selectedRun : nextRuns[0]?.id ?? null;
+      setSelectedRun(runId);
+      await loadRunDetails(runId);
+    } finally {
+      setScoresRefreshing(false);
     }
-    await fetch(`${API_URL}/api/v1/evaluations/${runId}`, {
-      method: "DELETE",
-      headers,
-    });
-    setSelectedRun(null);
-    await refresh();
   };
 
-  const deleteAuditLog = async (logId: string) => {
-    if (!confirm("Are you sure you want to delete this audit log?")) {
+  const checkSafetyGate = async () => {
+    if (!selected) {
+      setGateNotice("Run an evaluation before checking the CI safety gate.");
       return;
     }
-    await fetch(`${API_URL}/api/v1/audit-logs/${logId}`, {
-      method: "DELETE",
-      headers,
+    const response = await fetch(`${API_URL}/api/v1/safety-gate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify({ run_id: selected.id, threshold: 80 }),
     });
-    await refresh();
+    const payload = await response.json();
+    setGateNotice(`${payload.passed ? "Passed" : "Failed"}: ${payload.message}. Score ${payload.aggregate_score ?? "n/a"} at threshold ${payload.threshold}.`);
   };
 
   const selected = runs.find((run) => run.id === selectedRun) ?? runs[0];
   const aggregate = selected?.aggregate_score ?? 0;
   const scoreRows = buildScoreRows(results);
-  const severityRows = Object.entries(
-    results.reduce<Record<string, number>>((acc, result) => {
-      acc[result.attack_category] = (acc[result.attack_category] ?? 0) + 1;
-      return acc;
-    }, {})
-  ).map(([category, count]) => ({ category, count }));
+  const attackRows = buildAttackRows(results);
   const trend = runs.slice().reverse().map((run) => ({ name: run.model_version, score: run.aggregate_score ?? 0 }));
     const selectedProviderInfo = providers.find((provider) => provider.name === selectedProvider);
   const providerUnavailable = Boolean(selectedProviderInfo && !selectedProviderInfo.ready);
@@ -240,12 +257,8 @@ function App() {
   const moreFailedRuns = failedRunsAll.slice(latestCount);
 
   const sortedAudits = sortByDateDesc(audits);
-  const auditSuccessAll = sortedAudits.filter((a) => !/failed|failure|error/i.test(a.action));
-  const auditFailedAll = sortedAudits.filter((a) => /failed|failure|error/i.test(a.action));
-  const latestAuditSuccess = auditSuccessAll.slice(0, latestCount);
-  const latestAuditFailed = auditFailedAll.slice(0, latestCount);
-  const moreAuditSuccess = auditSuccessAll.slice(latestCount);
-  const moreAuditFailed = auditFailedAll.slice(latestCount);
+  const latestAudits = sortedAudits.slice(0, latestCount);
+  const olderAudits = sortedAudits.slice(latestCount);
 
   return (
     <main className="shell">
@@ -302,6 +315,28 @@ function App() {
               </label>
               <button className="primary-action" disabled={providerUnavailable} onClick={createRun}><Play size={16} /> Run evaluation</button>
             </div>
+            <div className="suite-builder">
+              <div>
+                <div className="panel-title"><ClipboardList size={18} /> Prompt Suite Builder</div>
+                <p>Select the adversarial categories for this suite version. The default suite covers all required risk categories.</p>
+              </div>
+              <div className="category-grid">
+                {ATTACK_CATEGORIES.map((category) => (
+                  <label className="category-toggle" key={category.key}>
+                    <input
+                      checked={selectedCategories.includes(category.key)}
+                      type="checkbox"
+                      onChange={(event) => {
+                        setSelectedCategories((current) =>
+                          event.target.checked ? [...current, category.key] : current.filter((item) => item !== category.key)
+                        );
+                      }}
+                    />
+                    <span>{category.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
             <div className="key-dropdown">
               <details>
                 <summary><KeyRound size={16} /> API key status</summary>
@@ -316,6 +351,14 @@ function App() {
               </details>
               <span className="key-note">Selected: {selectedProviderInfo?.label ?? "Mock Provider"} using {PROVIDER_MODELS[selectedProvider] ?? "configured model"}</span>
               {notice ? <span className={providerUnavailable ? "notice warning" : "notice"}>{notice}</span> : null}
+            </div>
+            <div className="gate-panel">
+              <div>
+                <div className="panel-title"><ShieldAlert size={18} /> CI Safety Gate</div>
+                <p>Checks the selected run against the deployment threshold exposed through the REST API.</p>
+              </div>
+              <button className="secondary-action" onClick={checkSafetyGate}><CheckCircle2 size={16} /> Check gate</button>
+              {gateNotice ? <span className="notice">{gateNotice}</span> : null}
             </div>
           </section>
         )}
@@ -339,7 +382,7 @@ function App() {
               <div className="panel-title"><Sparkles size={18} /> Individual Safety Scores</div>
               <p>Each card shows risk for one safety dimension. Lower risk is better; the aggregate safety score converts those risks into an overall safety number.</p>
             </div>
-            <button className="secondary-action" onClick={() => refresh()}><RefreshCw size={16} /> Refresh</button>
+            <button className="secondary-action" disabled={scoresRefreshing} onClick={refreshScores}><RefreshCw size={16} /> {scoresRefreshing ? "Refreshing" : "Refresh"}</button>
           </div>
           <div className="score-grid">
             {scoreRows.map((score) => (
@@ -365,7 +408,6 @@ function App() {
                         <span>{latestSuccessfulRuns[0].name}</span>
                         <div className="run-meta"><strong>{latestSuccessfulRuns[0].status}</strong><small>{latestSuccessfulRuns[0].provider} / {latestSuccessfulRuns[0].model_version}</small></div>
                         <progress value={latestSuccessfulRuns[0].progress} max="1" />
-                        <button className="delete-btn" onClick={(e) => { e.stopPropagation(); deleteRun(latestSuccessfulRuns[0].id); }} title="Delete run"><Trash2 size={14} /></button>
                       </div>
                     )
                   ) : (
@@ -381,7 +423,6 @@ function App() {
                             <span>{run.name}</span>
                             <div className="run-meta"><strong>{run.status}</strong><small>{run.provider} / {run.model_version}</small></div>
                             <progress value={run.progress} max="1" />
-                            <button className="delete-btn" onClick={(e) => { e.stopPropagation(); deleteRun(run.id); }} title="Delete run"><Trash2 size={14} /></button>
                           </div>
                         ))}
                       </div>
@@ -397,7 +438,6 @@ function App() {
                         <span>{latestFailedRuns[0].name}</span>
                         <div className="run-meta"><strong>{latestFailedRuns[0].status}</strong><small>{latestFailedRuns[0].provider} / {latestFailedRuns[0].model_version}</small></div>
                         <progress value={latestFailedRuns[0].progress} max="1" />
-                        <button className="delete-btn" onClick={(e) => { e.stopPropagation(); deleteRun(latestFailedRuns[0].id); }} title="Delete run"><Trash2 size={14} /></button>
                       </div>
                     )
                   ) : (
@@ -413,7 +453,6 @@ function App() {
                           <span>{run.name}</span>
                           <div className="run-meta"><strong>{run.status}</strong><small>{run.provider} / {run.model_version}</small></div>
                           <progress value={run.progress} max="1" />
-                          <button className="delete-btn" onClick={(e) => { e.stopPropagation(); deleteRun(run.id); }} title="Delete run"><Trash2 size={14} /></button>
                         </div>
                       ))}
                     </div>
@@ -458,7 +497,7 @@ function App() {
                 </div>
                 <div className="info-stat">
                   <span>Trend</span>
-                  <strong>{trend.length > 1 && trend[trend.length - 1].score > trend[0].score ? "📈 Improving" : trend.length > 1 ? "📉 Declining" : "—"}</strong>
+                  <strong>{trend.length > 1 && trend[trend.length - 1].score > trend[0].score ? "Improving" : trend.length > 1 ? "Declining" : "-"}</strong>
                 </div>
               </div>
             </div>
@@ -469,16 +508,21 @@ function App() {
         {activeTab === "attacks" && (
           <section className="panel">
             <div id="attacks" className="panel">
-            <div className="panel-title"><ShieldAlert size={18} /> Attack Analysis</div>
+            <div className="panel-heading">
+              <div>
+                <div className="panel-title"><ShieldAlert size={18} /> Attack Analysis</div>
+                <p>Distribution of evaluated prompts across every configured attack category.</p>
+              </div>
+            </div>
             <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={severityRows}>
+              <BarChart data={attackRows} margin={{ top: 5, right: 20, left: 0, bottom: 35 }}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="category" />
+                <XAxis dataKey="label" interval={0} angle={-20} textAnchor="end" height={60} />
                 <YAxis />
-                <Tooltip />
+                <Tooltip formatter={(value) => [`${value} prompts`, "Count"]} />
                 <Bar dataKey="count">
-                  {severityRows.map((row) => (
-                    <Cell key={row.category} fill={categoryColor(row.category)} />
+                  {attackRows.map((row) => (
+                    <Cell key={row.key} fill={categoryColor(row.key)} />
                   ))}
                 </Bar>
               </BarChart>
@@ -491,80 +535,29 @@ function App() {
           <section className="panel">
             <div id="audit" className="panel">
             <div className="panel-title"><History size={18} /> Audit Log Timeline</div>
-                <div className="audit-columns">
-              <div className="audit-column">
-                <div className="column-header">Success Events ({auditSuccessAll.length})</div>
-                <div className="timeline">
-                  {latestAuditSuccess[0] ? (
-                    <div className="event" key={latestAuditSuccess[0].id}>
-                      <div className="event-header">
-                        <div>
-                          <strong>{latestAuditSuccess[0].action}</strong>
-                          <span>{latestAuditSuccess[0].resource_type} {latestAuditSuccess[0].resource_id?.slice(0, 8)}</span>
-                        </div>
-                        <button className="delete-btn-small" onClick={() => deleteAuditLog(latestAuditSuccess[0].id)} title="Delete audit log"><Trash2 size={12} /></button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="event">No recent success events</div>
-                  )}
-                </div>
-                {moreAuditSuccess.length > 0 ? (
-                  <details className="history-dropdown">
-                    <summary>History</summary>
-                    <div className="timeline history-list">
-                      {moreAuditSuccess.map((audit) => (
-                        <div className="event" key={audit.id}>
-                          <div className="event-header">
-                            <div>
-                              <strong>{audit.action}</strong>
-                              <span>{audit.resource_type} {audit.resource_id?.slice(0, 8)}</span>
-                            </div>
-                            <button className="delete-btn-small" onClick={() => deleteAuditLog(audit.id)} title="Delete audit log"><Trash2 size={12} /></button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
-                ) : null}
-              </div>
-              <div className="audit-column">
-                <div className="column-header">Failed Events ({auditFailedAll.length})</div>
-                <div className="timeline">
-                  {latestAuditFailed[0] ? (
-                    <div className="event failed" key={latestAuditFailed[0].id}>
-                      <div className="event-header">
-                        <div>
-                          <strong>{latestAuditFailed[0].action}</strong>
-                          <span>{latestAuditFailed[0].resource_type} {latestAuditFailed[0].resource_id?.slice(0, 8)}</span>
-                        </div>
-                        <button className="delete-btn-small" onClick={() => deleteAuditLog(latestAuditFailed[0].id)} title="Delete audit log"><Trash2 size={12} /></button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="event">No recent failed events</div>
-                  )}
-                </div>
-                {moreAuditFailed.length > 0 ? (
-                  <details className="history-dropdown">
-                    <summary>History</summary>
-                    <div className="timeline history-list">
-                      {moreAuditFailed.map((audit) => (
-                        <div className="event failed" key={audit.id}>
-                          <div className="event-header">
-                            <div>
-                              <strong>{audit.action}</strong>
-                              <span>{audit.resource_type} {audit.resource_id?.slice(0, 8)}</span>
-                            </div>
-                            <button className="delete-btn-small" onClick={() => deleteAuditLog(audit.id)} title="Delete audit log"><Trash2 size={12} /></button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
-                ) : null}
-              </div>
+            <div className="audit-summary">
+              <span>{sortedAudits.length} total events</span>
+              <span>{sortedAudits.filter((audit) => auditTone(audit) === "failed").length} need attention</span>
             </div>
+            <div className="timeline">
+              {latestAudits.length ? (
+                latestAudits.map((audit) => (
+                  <AuditEvent key={audit.id} audit={audit} />
+                ))
+              ) : (
+                <div className="event empty">No audit events yet</div>
+              )}
+            </div>
+            {olderAudits.length > 0 ? (
+              <details className="history-dropdown">
+                <summary>Older activity ({olderAudits.length})</summary>
+                <div className="timeline history-list">
+                  {olderAudits.map((audit) => (
+                    <AuditEvent key={audit.id} audit={audit} />
+                  ))}
+                </div>
+              </details>
+            ) : null}
             </div>
           </section>
         )}
@@ -612,8 +605,8 @@ function ReportCard({ report, selected, onSelect }: { report: Report; selected: 
         <span>Safety score {report.json_payload.aggregate_score?.toFixed(1) ?? "pending"}</span>
       </div>
       <div className="report-summary">
-        <span>{Object.entries(distribution).map(([category, count]) => `${category}: ${count}`).join(" · ") || "No attack data"}</span>
-        <span>{Object.entries(severityCounts).filter(([, count]) => count).map(([severity, count]) => `${severity}: ${count}`).join(" · ") || "No severity breakdown"}</span>
+        <span>{Object.entries(distribution).map(([category, count]) => `${category}: ${count}`).join(" / ") || "No attack data"}</span>
+        <span>{Object.entries(severityCounts).filter(([, count]) => count).map(([severity, count]) => `${severity}: ${count}`).join(" / ") || "No severity breakdown"}</span>
       </div>
       {regressionSummary ? <p className="report-note">{regressionSummary}</p> : null}
       <a className="report-link" href={`${API_URL}/api/v1/reports/${report.id}/pdf`} target="_blank" rel="noreferrer">Download PDF</a>
@@ -649,11 +642,11 @@ function ReportDetails({ report }: { report: Report }) {
       <div className="report-details-summary">
         <div>
           <h4>Attack distribution</h4>
-          <p>{Object.entries(distribution).map(([category, count]) => `${category}: ${count}`).join(" · ") || "None"}</p>
+          <p>{Object.entries(distribution).map(([category, count]) => `${category}: ${count}`).join(" / ") || "None"}</p>
         </div>
         <div>
           <h4>Severity breakdown</h4>
-          <p>{Object.entries(severityCounts).filter(([, count]) => count).map(([severity, count]) => `${severity}: ${count}`).join(" · ") || "None"}</p>
+          <p>{Object.entries(severityCounts).filter(([, count]) => count).map(([severity, count]) => `${severity}: ${count}`).join(" / ") || "None"}</p>
         </div>
       </div>
       <div className="report-details-top-risks">
@@ -661,7 +654,7 @@ function ReportDetails({ report }: { report: Report }) {
         {topRisks.length ? (
           topRisks.map((risk, idx) => (
             <div className="risk-case" key={`${risk.attack_category}-${idx}`}>
-              <strong>{idx + 1}. {risk.attack_category ?? "Unknown"} — {risk.severity ?? "unknown"} — {risk.aggregate_safety_score ?? "n/a"}</strong>
+              <strong>{idx + 1}. {risk.attack_category ?? "Unknown"} - {risk.severity ?? "unknown"} - {risk.aggregate_safety_score ?? "n/a"}</strong>
               <p><span>Prompt:</span> {risk.mutated_prompt ?? "n/a"}</p>
               <p><span>Response:</span> {risk.response_text ?? "n/a"}</p>
             </div>
@@ -710,6 +703,94 @@ function ScoreCard({ score }: { score: { key: string; label: string; detail: str
   );
 }
 
+function AuditEvent({ audit }: { audit: AuditLog }) {
+  const details = auditDetails(audit);
+  const tone = auditTone(audit);
+  return (
+    <div className={`event ${tone}`}>
+      <div className="event-marker" />
+      <div className="event-body">
+        <div className="event-header">
+          <div>
+            <div className="event-title-row">
+              <strong>{details.title}</strong>
+              <span className={`status-chip ${tone}`}>{details.status}</span>
+            </div>
+            <span>{details.summary}</span>
+          </div>
+        </div>
+        <div className="event-meta">
+          <span>{formatDateTime(audit.created_at)}</span>
+          <span>{audit.actor_id ? `Actor ${audit.actor_id}` : "System event"}</span>
+          {audit.resource_id ? <span>Run {audit.resource_id.slice(0, 8)}</span> : null}
+        </div>
+        {details.notes.length ? (
+          <div className="event-notes">
+            {details.notes.map((note) => <span key={note}>{note}</span>)}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function auditTone(audit: AuditLog): "success" | "failed" | "neutral" {
+  if (/failed|failure|error/i.test(audit.action)) return "failed";
+  if (/completed|created|requested/i.test(audit.action)) return "success";
+  return "neutral";
+}
+
+function auditDetails(audit: AuditLog) {
+  const metadata = audit.metadata_json ?? {};
+  const name = valueText(metadata.name);
+  const provider = valueText(metadata.provider);
+  const model = [valueText(metadata.model_name), valueText(metadata.model_version)].filter(Boolean).join(" ");
+  const resource = audit.resource_id ? `${audit.resource_type.replace("_", " ")} ${audit.resource_id.slice(0, 8)}` : audit.resource_type.replace("_", " ");
+  const notes = [
+    provider ? `Provider ${provider}` : null,
+    model ? `Model ${model}` : null,
+    typeof metadata.mutation_depth === "number" ? `Mutation depth ${metadata.mutation_depth}` : null,
+    Array.isArray(metadata.categories) ? `${metadata.categories.length} attack categories` : null,
+    typeof metadata.result_count === "number" ? `${metadata.result_count} prompts evaluated` : null,
+    typeof metadata.aggregate_score === "number" ? `Safety score ${metadata.aggregate_score.toFixed(1)}` : null,
+    valueText(metadata.report_id) ? `Report ${valueText(metadata.report_id).slice(0, 8)}` : null,
+  ].filter((note): note is string => Boolean(note));
+
+  if (audit.action === "evaluation.created") {
+    return { title: "Evaluation queued", status: "Queued", summary: name ? `${name} is ready to run` : `${resource} was queued`, notes };
+  }
+  if (audit.action === "evaluation.execution_requested") {
+    return { title: "Execution requested", status: "Requested", summary: name ? `${name} was manually sent to the worker` : `${resource} was sent to the worker`, notes };
+  }
+  if (audit.action === "evaluation.completed") {
+    return { title: "Evaluation completed", status: "Completed", summary: name ? `${name} finished and produced a report` : `${resource} finished and produced a report`, notes };
+  }
+  if (audit.action === "evaluation.failed") {
+    const error = valueText(metadata.error);
+    return { title: "Evaluation failed", status: "Failed", summary: error || (name ? `${name} stopped before completion` : `${resource} stopped before completion`), notes };
+  }
+  if (audit.action === "evaluation.deleted") {
+    return { title: "Evaluation deleted", status: "Deleted", summary: `${resource} was removed from the run history`, notes };
+  }
+  return { title: humanizeAction(audit.action), status: "Event", summary: resource, notes };
+}
+
+function valueText(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function humanizeAction(action: string) {
+  return action
+    .split(".")
+    .map((part) => part.replace(/_/g, " "))
+    .join(" ")
+    .replace(/^\w/, (first) => first.toUpperCase());
+}
+
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
 function buildScoreRows(results: Result[]) {
   return SCORE_DEFINITIONS.map((definition) => {
     const values = results
@@ -718,6 +799,17 @@ function buildScoreRows(results: Result[]) {
     const value = values.length ? values.reduce((sum, next) => sum + next, 0) / values.length : 0;
     return { ...definition, value };
   });
+}
+
+function buildAttackRows(results: Result[]) {
+  const counts = results.reduce<Record<string, number>>((acc, result) => {
+    acc[result.attack_category] = (acc[result.attack_category] ?? 0) + 1;
+    return acc;
+  }, {});
+  return ATTACK_CATEGORIES.map((category) => ({
+    ...category,
+    count: counts[category.key] ?? 0,
+  }));
 }
 
 function providerLabel(providerName: string, providers: ProviderInfo[]) {
@@ -734,6 +826,7 @@ function categoryColor(category: string) {
     privacy_leakage: "#a855f7",
     misinformation: "#ec4899",
     adversarial: "#06b6d4",
+    csam_avoidance: "#991b1b",
   }[category] ?? "#475569";
 }
 

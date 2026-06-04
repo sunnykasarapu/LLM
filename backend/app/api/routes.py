@@ -6,9 +6,10 @@ from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.security import Role, require_role
 from app.repositories import AuditRepository, EvaluationRepository, RegressionRepository, ReportRepository, UserRepository
-from app.schemas import AuditRead, EvaluationCreate, EvaluationRunRead, RegressionRead, ReportRead, ResultRead
+from app.schemas import AuditRead, EvaluationCreate, EvaluationRunRead, RegressionRead, ReportRead, ResultRead, SafetyGateRead, SafetyGateRequest
 from app.tasks.evaluation_tasks import execute_evaluation_task
 from app.modules.provider_integration_layer.providers import HuggingFaceProvider
+from app.modules.observability_system.metrics import evaluations_created_total
 
 router = APIRouter(prefix="/api/v1")
 
@@ -26,7 +27,7 @@ def list_providers(actor: dict = Depends(require_role(Role.viewer))):
                 "api_key_required": True,
                 "api_key_configured": bool(settings.groq_api_key),
                 "ready": bool(settings.groq_api_key),
-                "message": "Configured" if settings.groq_api_key else "GROQ_API_KEY is missing from backend .env",
+                "message": "Configured" if settings.groq_api_key else "GROQ_API_KEY is missing from .env or backend/.env",
             },
             {
                 "name": "huggingface",
@@ -34,7 +35,7 @@ def list_providers(actor: dict = Depends(require_role(Role.viewer))):
                 "api_key_required": True,
                 "api_key_configured": bool(settings.huggingface_api_key),
                 "ready": bool(settings.huggingface_api_key),
-                "message": "Configured; chat access is verified before each run" if settings.huggingface_api_key else "HUGGINGFACE_API_KEY is missing from backend .env",
+                "message": "Configured; chat access is verified before each run" if settings.huggingface_api_key else "HUGGINGFACE_API_KEY is missing from .env or backend/.env",
             },
         ],
     }
@@ -57,7 +58,21 @@ def create_evaluation(payload: EvaluationCreate, db: Session = Depends(get_db), 
         config=config,
         created_by=actor["actor_id"],
     )
-    AuditRepository(db).log(actor_id=actor["actor_id"], action="evaluation.created", resource_type="evaluation_run", resource_id=run.id, metadata=config)
+    AuditRepository(db).log(
+        actor_id=actor["actor_id"],
+        action="evaluation.created",
+        resource_type="evaluation_run",
+        resource_id=run.id,
+        metadata={
+            "name": run.name,
+            "provider": run.provider,
+            "model_name": run.model_name,
+            "model_version": run.model_version,
+            "categories": config.get("categories", []),
+            "mutation_depth": config.get("mutation_depth"),
+        },
+    )
+    evaluations_created_total.inc()
     execute_evaluation_task.delay(run.id)
     return run
 
@@ -68,7 +83,18 @@ def execute_now(run_id: str, db: Session = Depends(get_db), actor: dict = Depend
     run = EvaluationRepository(db).get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Evaluation run not found")
-    AuditRepository(db).log(actor_id=actor["actor_id"], action="evaluation.execution_requested", resource_type="evaluation_run", resource_id=run.id, metadata={})
+    AuditRepository(db).log(
+        actor_id=actor["actor_id"],
+        action="evaluation.execution_requested",
+        resource_type="evaluation_run",
+        resource_id=run.id,
+        metadata={
+            "name": run.name,
+            "provider": run.provider,
+            "model_name": run.model_name,
+            "model_version": run.model_version,
+        },
+    )
     task = execute_evaluation_task.delay(run.id)
     return {"task_id": task.id, "run_id": run.id}
 
@@ -88,14 +114,34 @@ def get_evaluation(run_id: str, db: Session = Depends(get_db), actor: dict = Dep
 
 @router.delete("/evaluations/{run_id}")
 def delete_evaluation(run_id: str, db: Session = Depends(get_db), actor: dict = Depends(require_role(Role.evaluator))):
-    repo = EvaluationRepository(db)
-    if not repo.get_run(run_id):
+    if not EvaluationRepository(db).get_run(run_id):
         raise HTTPException(status_code=404, detail="Evaluation run not found")
-    success = repo.delete_run(run_id)
-    AuditRepository(db).log(actor_id=actor["actor_id"], action="evaluation.deleted", resource_type="evaluation_run", resource_id=run_id, metadata={})
-    if success:
-        return {"message": "Evaluation run deleted successfully"}
-    raise HTTPException(status_code=500, detail="Failed to delete evaluation run")
+    raise HTTPException(status_code=405, detail="Evaluation runs are immutable audit records and cannot be deleted")
+
+
+@router.post("/safety-gate", response_model=SafetyGateRead)
+def safety_gate(payload: SafetyGateRequest, db: Session = Depends(get_db), actor: dict = Depends(require_role(Role.viewer))):
+    repo = EvaluationRepository(db)
+    run = repo.get_run(payload.run_id) if payload.run_id else repo.latest_completed_run(model_name=payload.model_name, model_version=payload.model_version)
+    if not run:
+        return SafetyGateRead(
+            passed=False,
+            threshold=payload.threshold,
+            aggregate_score=None,
+            run_id=None,
+            status=None,
+            message="No completed evaluation run matched the safety gate request",
+        )
+    score = run.aggregate_score
+    passed = run.status.value == "completed" and score is not None and score >= payload.threshold
+    return SafetyGateRead(
+        passed=passed,
+        threshold=payload.threshold,
+        aggregate_score=score,
+        run_id=run.id,
+        status=run.status,
+        message="Safety gate passed" if passed else "Safety gate failed",
+    )
 
 
 @router.get("/evaluations/{run_id}/results", response_model=list[ResultRead])
@@ -136,8 +182,6 @@ def list_audit_logs(db: Session = Depends(get_db), actor: dict = Depends(require
 
 @router.delete("/audit-logs/{log_id}")
 def delete_audit_log(log_id: str, db: Session = Depends(get_db), actor: dict = Depends(require_role(Role.evaluator))):
-    repo = AuditRepository(db)
-    success = repo.delete_log(log_id)
-    if success:
-        return {"message": "Audit log deleted successfully"}
-    raise HTTPException(status_code=404, detail="Audit log not found")
+    if not any(log.id == log_id for log in AuditRepository(db).list_logs()):
+        raise HTTPException(status_code=404, detail="Audit log not found")
+    raise HTTPException(status_code=405, detail="Audit logs are immutable and cannot be deleted")

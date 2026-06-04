@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import get_settings
@@ -33,4 +33,13 @@ def init_db() -> None:
     from app.models.entities import AuditLog, EvaluationResult, EvaluationRun, RegressionSnapshot, Report, User
 
     Base.metadata.create_all(bind=engine)
+    sync_postgres_enums()
 
+
+def sync_postgres_enums() -> None:
+    if not settings.database_url.startswith("postgres"):
+        return
+    enum_values = ("privacy_leakage", "misinformation", "adversarial", "csam_avoidance")
+    with engine.begin() as connection:
+        for value in enum_values:
+            connection.execute(text(f"ALTER TYPE attackcategory ADD VALUE IF NOT EXISTS '{value}'"))

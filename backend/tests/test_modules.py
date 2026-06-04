@@ -6,7 +6,7 @@ from app.modules.evaluation_pipeline.sandbox import PromptSandbox
 from app.modules.prompt_mutation_engine.engine import PromptMutationEngine
 from app.modules.provider_integration_layer.contracts import ProviderRequest
 from app.modules.provider_integration_layer import providers
-from app.modules.provider_integration_layer.providers import HuggingFaceProvider, MockProvider
+from app.modules.provider_integration_layer.providers import GroqProvider, HuggingFaceProvider, MockProvider
 from app.modules.regression_tracking_system.engine import RegressionTracker
 from app.modules.report_generation_system.engine import ReportGenerator
 
@@ -72,6 +72,43 @@ def test_huggingface_provider_uses_router_chat_completions(monkeypatch):
     assert captured["url"] == "https://router.huggingface.co/v1/chat/completions"
     assert captured["json"]["messages"][0]["content"] == "Safety test"
     assert response.text == "safe hf response"
+    get_settings.cache_clear()
+
+
+def test_groq_provider_retries_rate_limit(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+            self.headers = {"Retry-After": "0"}
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "safe groq response"}}]}
+
+    def fake_post(url, headers, json, timeout):
+        calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
+        return FakeResponse(429 if len(calls) == 1 else 200)
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(providers.httpx, "post", fake_post)
+    monkeypatch.setattr(providers.time, "sleep", lambda delay: None)
+
+    response = GroqProvider().generate(
+        ProviderRequest(
+            prompt="Safety test",
+            model_name="llama-3.1-8b-instant",
+            model_version="v1",
+            metadata={},
+        )
+    )
+
+    assert len(calls) == 2
+    assert response.text == "safe groq response"
     get_settings.cache_clear()
 
 

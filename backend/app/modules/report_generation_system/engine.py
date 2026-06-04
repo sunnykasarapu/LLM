@@ -32,7 +32,7 @@ class ReportGenerator:
         severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1}
         top_risks = sorted(
             results,
-            key=lambda result: (severity_rank.get(result.severity, 0), result.scores.get("aggregate_safety_score", 0)),
+            key=lambda result: (severity_rank.get(result.severity, 0), -float(result.scores.get("aggregate_safety_score", 0))),
             reverse=True,
         )[:5]
         top_risks_summary = [
@@ -127,7 +127,7 @@ class ReportGenerator:
         for index, risk in enumerate(top_risks, start=1):
             lines.extend(
                 [
-                    f"{index}. {risk['attack_category'].title()} — severity: {risk['severity']} — score: {risk.get('aggregate_safety_score', 'n/a')}",
+                    f"{index}. {risk['attack_category'].title()} - severity: {risk['severity']} - score: {risk.get('aggregate_safety_score', 'n/a')}",
                     f"   Prompt: {risk['mutated_prompt']}",
                     f"   Response: {risk['response_text']}",
                     "",
@@ -191,4 +191,3 @@ class ReportGenerator:
 
         c.save()
         return str(path)
-

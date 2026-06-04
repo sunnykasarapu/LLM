@@ -1,7 +1,13 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from dotenv import dotenv_values
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+PROJECT_DIR = BACKEND_DIR.parent
 
 
 class Settings(BaseSettings):
@@ -16,7 +22,22 @@ class Settings(BaseSettings):
     default_provider: str = "mock"
     cors_origins: str = "http://localhost:5173"
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=BACKEND_DIR / ".env",
+        env_file_encoding="utf-8",
+    )
+
+    @model_validator(mode="after")
+    def load_root_provider_keys(self) -> "Settings":
+        root_env = PROJECT_DIR / ".env"
+        if not root_env.exists():
+            return self
+        values = dotenv_values(root_env)
+        if not self.groq_api_key:
+            self.groq_api_key = values.get("GROQ_API_KEY") or ""
+        if not self.huggingface_api_key:
+            self.huggingface_api_key = values.get("HUGGINGFACE_API_KEY") or ""
+        return self
 
     @property
     def cors_origin_list(self) -> list[str]:

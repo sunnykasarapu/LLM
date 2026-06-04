@@ -17,6 +17,7 @@ class AttackCategory(str, Enum):
     privacy_leakage = "privacy_leakage"
     misinformation = "misinformation"
     adversarial = "adversarial"
+    csam_avoidance = "csam_avoidance"
 
 
 class UserRole(str, Enum):

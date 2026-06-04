@@ -1,25 +1,55 @@
- {
+{
   "title": "Safety Evaluation Observability",
   "schemaVersion": 39,
+  "refresh": "15s",
   "panels": [
     {
       "type": "stat",
       "title": "API Requests",
-      "targets": [{"expr": "sum(safety_api_requests_total)"}],
-      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0}
+      "targets": [{ "expr": "sum(safety_api_requests_total)" }],
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 }
     },
     {
       "type": "stat",
       "title": "Evaluations Created",
-      "targets": [{"expr": "sum(safety_evaluations_created_total)"}],
-      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0}
+      "targets": [{ "expr": "sum(safety_evaluations_created_total)" }],
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 }
     },
     {
       "type": "stat",
-      "title": "Provider Latency",
-      "targets": [{"expr": "avg(safety_provider_latency_ms)"}],
-      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0}
+      "title": "Prompt Cache Hits",
+      "targets": [{ "expr": "sum(safety_prompt_cache_hits_total)" }],
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Avg Provider Latency",
+      "targets": [{ "expr": "avg(safety_provider_latency_avg_ms)" }],
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Safety Score Trend",
+      "targets": [{ "expr": "safety_score" }],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Regression Delta",
+      "targets": [{ "expr": "safety_score_regression_delta" }],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 }
+    },
+    {
+      "type": "barchart",
+      "title": "Prompt Outcomes",
+      "targets": [{ "expr": "sum by (outcome) (safety_prompt_results_total)" }],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 }
+    },
+    {
+      "type": "barchart",
+      "title": "Prompt Categories",
+      "targets": [{ "expr": "sum by (category) (safety_prompt_results_total)" }],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 }
     }
   ]
 }
-

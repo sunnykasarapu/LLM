@@ -1,6 +1,6 @@
 CREATE TYPE role AS ENUM ('admin', 'evaluator', 'viewer');
 CREATE TYPE evaluationstatus AS ENUM ('queued', 'running', 'completed', 'failed');
-CREATE TYPE attackcategory AS ENUM ('jailbreak', 'injection', 'toxicity', 'hallucination', 'bias');
+CREATE TYPE attackcategory AS ENUM ('jailbreak', 'injection', 'toxicity', 'hallucination', 'bias', 'privacy_leakage', 'misinformation', 'adversarial', 'csam_avoidance');
 
 CREATE TABLE users (
   id TEXT PRIMARY KEY,
